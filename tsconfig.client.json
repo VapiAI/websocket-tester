@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "es2020",
+    "moduleResolution": "bundler",
+    "lib": ["es2020", "dom", "dom.iterable"],
+    "outDir": "dist/client",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/client"],
+  "exclude": ["node_modules", "dist"]
+}

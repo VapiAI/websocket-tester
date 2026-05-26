@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vapi WebSocket Tester</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <h1>Vapi WebSocket Tester</h1>
+    <div class="header-fields">
+      <input
+        type="text"
+        id="assistant-id"
+        class="assistant-id"
+        placeholder="Assistant ID (or set VAPI_ASSISTANT_ID in .env)"
+      />
+      <button class="btn-secondary" id="btn-overrides-toggle">Assistant overrides ▾</button>
+      <button class="btn-primary" id="btn-start">Start Call</button>
+      <button class="btn-danger" id="btn-end" disabled>End Call</button>
+    </div>
+    <div id="status-pill" class="status-pill">
+      <span class="dot"></span>
+      <span id="status-text">Disconnected</span>
+    </div>
+  </div>
+  <div class="overrides-wrap" id="overrides-wrap">
+    <textarea
+      id="cfg-overrides"
+      class="overrides-textarea"
+      rows="5"
+      placeholder='{
+  "firstMessage": "Hello, how can I help you?",
+  "model": { "provider": "openai", "model": "gpt-4o" },
+  "voice": { "provider": "11labs", "voiceId": "21m00Tcm4TlvDq8ikWAM" }
+}'
+    ></textarea>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Event Log -->
+  <div class="log-panel">
+    <div class="panel-header">
+      Event Log
+      <div class="panel-header-right">
+        <button class="btn-icon" id="btn-clear-log" title="Clear log">✕</button>
+        <button class="btn-icon" id="btn-autoscroll" title="Auto-scroll" style="color: var(--green); border-color: var(--green);">↓</button>
+      </div>
+    </div>
+    <div id="event-log"></div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls-panel">
+    <div class="panel-header">Controls</div>
+    <div class="controls-body">
+
+      <!-- Microphone -->
+      <div class="control-card">
+        <div class="control-card-header">Microphone</div>
+        <div class="control-card-body">
+          <div class="mic-controls">
+            <button class="btn-icon" id="btn-mic" title="Toggle microphone">🎤</button>
+            <span class="mic-label">Microphone</span>
+            <span class="mic-status inactive" id="mic-status">Inactive</span>
+          </div>
+          <div class="audio-meter">
+            <div class="audio-meter-bar" id="mic-meter"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Say -->
+      <div class="control-card">
+        <div class="control-card-header">Say</div>
+        <div class="control-card-body">
+          <div class="field-row">
+            <label>Content</label>
+            <textarea id="say-content" placeholder="Text for the assistant to speak..."></textarea>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="say-end-call" />
+            End call after spoken
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" id="say-interrupt" />
+            Interrupt existing speech
+          </label>
+          <button class="btn-secondary" id="btn-say" disabled>Send Say</button>
+        </div>
+      </div>
+
+      <!-- Add Message -->
+      <div class="control-card">
+        <div class="control-card-header">Add Message</div>
+        <div class="control-card-body">
+          <div class="field-row">
+            <label>Role</label>
+            <select id="add-msg-role">
+              <option value="user">user</option>
+              <option value="assistant">assistant</option>
+              <option value="system">system</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label>Content</label>
+            <textarea id="add-msg-content" placeholder="Message content..."></textarea>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="add-msg-trigger" checked />
+            Trigger response
+          </label>
+          <button class="btn-secondary" id="btn-add-msg" disabled>Send Add Message</button>
+        </div>
+      </div>
+
+      <!-- Control -->
+      <div class="control-card">
+        <div class="control-card-header">Control</div>
+        <div class="control-card-body">
+          <div class="field-row">
+            <label>Action</label>
+            <select id="control-action">
+              <option value="mute-assistant">mute-assistant</option>
+              <option value="unmute-assistant">unmute-assistant</option>
+              <option value="mute-customer">mute-customer</option>
+              <option value="unmute-customer">unmute-customer</option>
+              <option value="say-first-message">say-first-message</option>
+            </select>
+          </div>
+          <button class="btn-secondary" id="btn-control" disabled>Send Control</button>
+        </div>
+      </div>
+
+      <!-- Raw JSON -->
+      <div class="control-card">
+        <div class="control-card-header">Raw JSON Message</div>
+        <div class="control-card-body">
+          <div class="field-row">
+            <textarea id="raw-json" placeholder='{"type": "end-call"}' style="min-height: 80px; font-family: var(--mono); font-size: 12px;"></textarea>
+          </div>
+          <button class="btn-secondary" id="btn-raw" disabled>Send Raw</button>
+        </div>
+      </div>
+
+      <!-- Manual Audio -->
+      <div class="control-card">
+        <div class="control-card-header">Manual Audio</div>
+        <div class="control-card-body">
+
+          <div class="field-row">
+            <label>WAV File</label>
+            <div class="file-row">
+              <label class="btn-secondary file-btn">
+                Choose .wav
+                <input type="file" id="wav-file" accept=".wav,audio/wav">
+              </label>
+              <span class="file-name" id="wav-filename">No file selected</span>
+            </div>
+            <div id="wav-info" style="display:none" class="wav-info"></div>
+          </div>
+          <button class="btn-secondary" id="btn-wav" disabled>Send WAV</button>
+
+          <hr class="control-divider">
+
+          <div class="field-row">
+            <label>Hex Bytes</label>
+            <textarea id="hex-input" placeholder="FF 00 A1 B2 ..." style="min-height: 60px; font-family: var(--mono); font-size: 12px;"></textarea>
+          </div>
+          <button class="btn-secondary" id="btn-hex" disabled>Send Hex</button>
+
+          <hr class="control-divider">
+
+          <div class="field-row">
+            <label>Silence Stream <span class="hint">?<span class="hint-text">Continuously sends silent (null-byte) audio frames when the microphone isn't active. Useful for keeping the audio pipeline open without real input.</span></span></label>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button class="btn-secondary" id="btn-silence">Start</button>
+              <span id="silence-status" style="font-size:11px;color:var(--muted)">Off</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <span class="stat-item">
+    <span class="stat-label">RX</span>
+    <span class="stat-value" id="stat-rx">—</span>
+  </span>
+  <span class="stat-item">
+    <span class="stat-label">TX</span>
+    <span class="stat-value" id="stat-tx">—</span>
+  </span>
+  <span class="stat-item">
+    <span class="stat-label">chunks</span>
+    <span class="stat-value" id="stat-chunks">0</span>
+  </span>
+</div>
+
+<script type="module" src="index.js"></script>
+</body>
+</html>
