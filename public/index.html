@@ -20,6 +20,24 @@
         placeholder="Assistant ID (or set VAPI_ASSISTANT_ID in .env)"
       />
       <button class="btn-secondary" id="btn-overrides-toggle">Assistant overrides ▾</button>
+      <select id="sample-rate" class="sample-rate-select">
+        <option value="16000">16 kHz</option>
+        <option value="24000">24 kHz</option>
+        <option value="44100" selected>44.1 kHz</option>
+        <option value="48000">48 kHz</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input
+        type="number"
+        id="sample-rate-custom"
+        class="sample-rate-custom"
+        min="3000"
+        max="192000"
+        placeholder="Hz"
+        style="display:none"
+      />
+      <span class="hint hint-below" id="sample-rate-hint">?<span class="hint-text">The audio sample rate for the call. The correct value depends on your voice provider. If the audio crackles a lot, try changing this. Accepted range: 3,000–192,000 Hz.</span></span>
+      <span id="sample-rate-error" class="sample-rate-error" style="display:none">3000–192,000 Hz</span>
       <button class="btn-primary" id="btn-start">Start Call</button>
       <button class="btn-danger" id="btn-end" disabled>End Call</button>
     </div>

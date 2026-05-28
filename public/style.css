@@ -85,7 +85,7 @@ header h1 {
   flex-wrap: wrap;
 }
 
-input[type="text"], select, textarea {
+input[type="text"], input[type="number"], select, textarea {
   background: var(--surface2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -97,9 +97,14 @@ input[type="text"], select, textarea {
   transition: border-color 0.15s;
 }
 
-input[type="text"]:focus, select:focus, textarea:focus {
+input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
   border-color: var(--accent);
 }
+
+.sample-rate-select { width: 100px; }
+.sample-rate-custom { width: 90px; }
+.sample-rate-error { font-size: 11px; color: var(--red); white-space: nowrap; }
+input.invalid { border-color: var(--red) !important; }
 
 input.assistant-id { width: 300px; }
 
@@ -479,6 +484,17 @@ button:disabled { opacity: 0.45; cursor: default; }
   transform: translateX(-50%);
   border: 5px solid transparent;
   border-top-color: var(--border);
+}
+
+.hint-below .hint-text {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+.hint-below .hint-text::after {
+  top: auto;
+  bottom: 100%;
+  border-top-color: transparent;
+  border-bottom-color: var(--border);
 }
 
 .mic-label { font-size: 12px; color: var(--muted); }

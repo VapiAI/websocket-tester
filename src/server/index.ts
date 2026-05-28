@@ -31,6 +31,7 @@ interface StartCallBody {
   assistantOverrides?: Record<string, unknown>;
   name?: string;
   metadata?: Record<string, unknown>;
+  sampleRate?: number;
 }
 
 app.post('/api/start-call', async (req, res) => {
@@ -44,6 +45,12 @@ app.post('/api/start-call', async (req, res) => {
       return;
     }
 
+    if (body.sampleRate !== undefined && (typeof body.sampleRate !== 'number' || !Number.isFinite(body.sampleRate) || body.sampleRate < 3000 || body.sampleRate > 192000)) {
+      res.status(400).json({ error: 'sampleRate must be a number between 3000 and 192000' });
+      return;
+    }
+    const sampleRate = body.sampleRate !== undefined ? Math.round(body.sampleRate) : 44100;
+
     const callPayload: Record<string, unknown> = {
       assistantId,
       transport: {
@@ -51,7 +58,7 @@ app.post('/api/start-call', async (req, res) => {
         audioFormat: {
           format: 'pcm_s16le',
           container: 'raw',
-          sampleRate: 16000,
+          sampleRate,
         },
       },
     };

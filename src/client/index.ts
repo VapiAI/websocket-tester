@@ -12,6 +12,7 @@ import type {
 let ws: WebSocket | null = null;
 let callId: string | null = null;
 let audioCtx: AudioContext | null = null;
+let currentSampleRate = 44100;
 let nextPlayTime = 0;
 let micStream: MediaStream | null = null;
 let micSource: MediaStreamAudioSourceNode | null = null;
@@ -51,7 +52,31 @@ setInterval(() => {
   txBytesAccum = 0;
 }, 1000);
 
-const SAMPLE_RATE = 16000;
+// Minimum number of seconds to wait between uploading audio chunks. 20ms is the preferred value by Vapi
+const audioChunkIntervalMs = 20;
+
+function parseSelectedSampleRate(): number | null {
+  const sel = document.getElementById('sample-rate') as HTMLSelectElement;
+  if (sel.value !== 'custom') return parseInt(sel.value, 10);
+  const val = parseInt((document.getElementById('sample-rate-custom') as HTMLInputElement).value, 10);
+  return (Number.isFinite(val) && val >= 3000 && val <= 192000) ? val : null;
+}
+
+function onCustomRateInput(): void {
+  const input = document.getElementById('sample-rate-custom') as HTMLInputElement;
+  const valid = parseSelectedSampleRate() !== null;
+  const hasValue = input.value !== '';
+  input.classList.toggle('invalid', hasValue && !valid);
+  document.getElementById('sample-rate-error')!.style.display = (hasValue && !valid) ? '' : 'none';
+  (document.getElementById('btn-start') as HTMLButtonElement).disabled = !valid;
+}
+
+// Returns the smallest power-of-2 ScriptProcessorNode buffer size that yields a chunk >= audioChunkIntervalMs.
+function bufferSizeForRate(sampleRate: number): number {
+  const minSamples = sampleRate * audioChunkIntervalMs / 1000;
+  const sizes = [256, 512, 1024, 2048, 4096, 8192, 16384];
+  return sizes.find(s => s >= minSamples) ?? 16384;
+}
 
 // ─── Audio Utilities ──────────────────────────────────────────────────────────
 
@@ -71,8 +96,9 @@ function float32ToInt16(buf: Float32Array): Int16Array {
 }
 
 function ensureAudioCtx(): void {
-  if (!audioCtx || audioCtx.state === 'closed') {
-    audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  if (!audioCtx || audioCtx.state === 'closed' || audioCtx.sampleRate !== currentSampleRate) {
+    if (audioCtx && audioCtx.state !== 'closed') void audioCtx.close();
+    audioCtx = new AudioContext({ sampleRate: currentSampleRate });
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
@@ -82,7 +108,7 @@ function playAudioChunk(arrayBuffer: ArrayBuffer): void {
   const int16 = new Int16Array(arrayBuffer);
   if (int16.length === 0) return;
   const float32 = int16ToFloat32(int16);
-  const buffer = audioCtx!.createBuffer(1, float32.length, SAMPLE_RATE);
+  const buffer = audioCtx!.createBuffer(1, float32.length, currentSampleRate);
   buffer.getChannelData(0).set(float32);
   const source = audioCtx!.createBufferSource();
   source.buffer = buffer;
@@ -94,19 +120,20 @@ function playAudioChunk(arrayBuffer: ArrayBuffer): void {
 
 // ─── Microphone ───────────────────────────────────────────────────────────────
 
-async function startMic(): Promise<void> {
-  ensureAudioCtx();
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  } catch (e) {
-    logSys(`Mic error: ${(e as Error).message}`);
-    return;
-  }
+function attachMicNodes(): void {
+  if (micSource) { micSource.disconnect(); micSource = null; }
+  if (micNode) { micNode.disconnect(); micNode = null; }
 
-  micSource = audioCtx!.createMediaStreamSource(micStream);
+  micSource = audioCtx!.createMediaStreamSource(micStream!);
 
-  // ScriptProcessor is deprecated but universally supported; buffer size 2048 @ 16kHz ≈ 128ms chunks
-  micNode = audioCtx!.createScriptProcessor(2048, 1, 1);
+  // ScriptProcessor is deprecated but universally supported
+  const micBufSize = bufferSizeForRate(currentSampleRate);
+  console.log(
+    "Attaching mic: sampleRate=%s, bufSize=%s, chunkInterval=%sms",
+    currentSampleRate, micBufSize, micBufSize / currentSampleRate * 1000
+  );
+
+  micNode = audioCtx!.createScriptProcessor(micBufSize, 1, 1);
   const meter = document.getElementById('mic-meter')!;
 
   micNode.onaudioprocess = (e: AudioProcessingEvent) => {
@@ -126,6 +153,18 @@ async function startMic(): Promise<void> {
 
   micSource.connect(micNode);
   micNode.connect(audioCtx!.destination); // must be connected to run
+}
+
+async function startMic(): Promise<void> {
+  ensureAudioCtx();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    logSys(`Mic error: ${(e as Error).message}`);
+    return;
+  }
+
+  attachMicNodes();
 
   micActive = true;
   document.getElementById('btn-mic')!.classList.add('active');
@@ -161,11 +200,12 @@ async function toggleMic(): Promise<void> {
 
 async function startCall(): Promise<void> {
   const assistantId = (document.getElementById('assistant-id') as HTMLInputElement).value.trim();
+  const sampleRate = parseSelectedSampleRate()!;
   setStatus('connecting', 'Connecting…');
 
   let data: StartCallApiResponse;
   try {
-    const body: Record<string, unknown> = {};
+    const body: Record<string, unknown> = { sampleRate };
     if (assistantId) body.assistantId = assistantId;
 
     const rawOverrides = (document.getElementById('cfg-overrides') as HTMLTextAreaElement).value.trim();
@@ -193,7 +233,14 @@ async function startCall(): Promise<void> {
   }
 
   callId = data.callId;
-  logSys(`Call created: ${callId}`);
+  const prevSampleRate = currentSampleRate;
+  currentSampleRate = sampleRate;
+  updateSilenceConfig();
+  if (micActive && micStream && sampleRate !== prevSampleRate) {
+    ensureAudioCtx();
+    attachMicNodes();
+  }
+  logSys(`Call created: ${callId} (${sampleRate} Hz)`);
 
   const wsUrl = `ws://${location.host}/ws?session=${data.sessionId}`;
   ws = new WebSocket(wsUrl);
@@ -325,8 +372,11 @@ function sendRaw(): void {
 
 let silenceActive = false;
 let silenceInterval: ReturnType<typeof setInterval> | null = null;
-// Pre-allocated zero buffer: 2048 samples × 2 bytes = 4096 bytes (128 ms @ 16 kHz)
-const SILENCE_FRAME = new ArrayBuffer(2048 * 2);
+let silenceFrame = new ArrayBuffer(Math.round(currentSampleRate * audioChunkIntervalMs / 1000) * 2);
+
+function updateSilenceConfig(): void {
+  silenceFrame = new ArrayBuffer(Math.round(currentSampleRate * audioChunkIntervalMs / 1000) * 2);
+}
 
 function toggleSilence(): void {
   silenceActive ? stopSilence() : startSilence();
@@ -347,10 +397,10 @@ function startSilence(): void {
       setSilenceStatus('waiting', 'Waiting for call…');
       return;
     }
-    ws.send(SILENCE_FRAME);
-    txBytesAccum += SILENCE_FRAME.byteLength;
+    ws.send(silenceFrame);
+    txBytesAccum += silenceFrame.byteLength;
     setSilenceStatus('active', 'Sending');
-  }, 128); // 2048 / 16000 * 1000 = 128 ms
+  }, audioChunkIntervalMs);
 }
 
 function stopSilence(): void {
@@ -440,12 +490,13 @@ function handleWavChange(input: HTMLInputElement): void {
 
     wavPcmBuffer = result.pcmData;
 
-    const match = result.sampleRate === 16000 && result.channels === 1 && result.bitsPerSample === 16;
+    const expectedRate = parseSelectedSampleRate() ?? currentSampleRate;
+    const match = result.sampleRate === expectedRate && result.channels === 1 && result.bitsPerSample === 16;
     const kb = (wavPcmBuffer.byteLength / 1024).toFixed(1);
     const infoEl = document.getElementById('wav-info')!;
     infoEl.textContent =
       `${result.sampleRate} Hz · ${result.channels}ch · ${result.bitsPerSample}-bit · ${kb} KB PCM` +
-      (match ? '' : '  ⚠ expected 16000 Hz / 1ch / 16-bit');
+      (match ? '' : `  ⚠ expected ${expectedRate} Hz / 1ch / 16-bit`);
     infoEl.className = 'wav-info' + (match ? '' : ' mismatch');
     infoEl.style.display = 'block';
 
@@ -665,7 +716,7 @@ function setConnected(connected: boolean): void {
   const disable = (id: string, value: boolean): void => {
     (document.getElementById(id) as HTMLButtonElement).disabled = value;
   };
-  disable('btn-start', connected);
+  disable('btn-start', connected || parseSelectedSampleRate() === null);
   disable('btn-end', !connected);
   disable('btn-say', !connected);
   disable('btn-add-msg', !connected);
@@ -691,6 +742,26 @@ document.getElementById('wav-file')!.addEventListener('change', e => handleWavCh
 document.getElementById('btn-wav')!.addEventListener('click', sendWav);
 document.getElementById('btn-hex')!.addEventListener('click', sendHex);
 document.getElementById('btn-silence')!.addEventListener('click', toggleSilence);
+document.getElementById('sample-rate')!.addEventListener('change', (e) => {
+  const isCustom = (e.target as HTMLSelectElement).value === 'custom';
+  const customInput = document.getElementById('sample-rate-custom') as HTMLInputElement;
+  customInput.style.display = isCustom ? '' : 'none';
+  if (isCustom) {
+    customInput.focus();
+    onCustomRateInput();
+  } else {
+    customInput.classList.remove('invalid');
+    document.getElementById('sample-rate-error')!.style.display = 'none';
+    (document.getElementById('btn-start') as HTMLButtonElement).disabled = false;
+  }
+});
+document.getElementById('sample-rate-custom')!.addEventListener('input', onCustomRateInput);
+
+// Sync custom input visibility in case the browser restored the dropdown to 'custom' after a refresh
+if ((document.getElementById('sample-rate') as HTMLSelectElement).value === 'custom') {
+  (document.getElementById('sample-rate-custom') as HTMLInputElement).style.display = '';
+  onCustomRateInput();
+}
 
 (async () => {
   try {
