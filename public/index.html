@@ -65,6 +65,27 @@
   <div class="log-panel">
     <div class="panel-header">
       Event Log
+      <div class="log-filter" id="log-filter">
+        <button class="btn-filter" id="btn-filter-toggle" type="button">Types ▾</button>
+        <div class="filter-menu" id="filter-menu" hidden>
+          <div class="filter-menu-actions">
+            <button type="button" id="btn-filter-all">All</button>
+            <button type="button" id="btn-filter-none">None</button>
+          </div>
+          <div class="filter-menu-list" id="filter-menu-list">
+            <div class="filter-menu-empty" id="filter-menu-empty">No message types yet</div>
+          </div>
+        </div>
+      </div>
+      <div class="log-search-wrap">
+        <input
+          type="text"
+          id="log-search"
+          class="log-search"
+          placeholder="Filter…"
+        />
+        <button class="log-search-clear" id="btn-clear-search" title="Clear filter" hidden>✕</button>
+      </div>
       <div class="panel-header-right">
         <button class="btn-icon" id="btn-clear-log" title="Clear log">✕</button>
         <button class="btn-icon" id="btn-autoscroll" title="Auto-scroll" style="color: var(--green); border-color: var(--green);">↓</button>

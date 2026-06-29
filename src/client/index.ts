@@ -20,6 +20,9 @@ let micNode: ScriptProcessorNode | null = null;
 let micActive = false;
 let autoScroll = true;
 let expandedEntry: HTMLElement | null = null;
+let logFilter = '';
+const knownTypes = new Set<string>();
+const selectedTypes = new Set<string>();
 
 let rxBytesAccum = 0;
 let txBytesAccum = 0;
@@ -559,13 +562,16 @@ function toggleOverrides(): void {
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
-function appendLog(dir: LogDir, tagHtml: string, summary: string, detail: string | null): void {
+function appendLog(dir: LogDir, type: string, tagHtml: string, summary: string, detail: string | null): void {
   const now = new Date();
   const pad = (n: number, w = 2): string => String(n).padStart(w, '0');
   const localTime = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${pad(now.getMilliseconds(), 3)}`;
   const log = document.getElementById('event-log')!;
   const entry = document.createElement('div');
   entry.className = 'log-entry';
+  entry.dataset.search = `${summary} ${detail ?? ''}`.toLowerCase();
+  entry.dataset.type = type;
+  registerLogType(type);
 
   const row = document.createElement('div');
   row.className = 'log-row';
@@ -600,22 +606,104 @@ function appendLog(dir: LogDir, tagHtml: string, summary: string, detail: string
   }
 
   log.appendChild(entry);
+  entry.style.display = entryVisible(entry) ? '' : 'none';
   if (autoScroll) log.scrollTop = log.scrollHeight;
+}
+
+function entryVisible(entry: HTMLElement): boolean {
+  const textOk = !logFilter || entry.dataset.search!.includes(logFilter);
+  const typeOk = selectedTypes.has(entry.dataset.type!);
+  return textOk && typeOk;
+}
+
+function applyFilters(): void {
+  document.querySelectorAll<HTMLElement>('#event-log .log-entry').forEach(entry => {
+    entry.style.display = entryVisible(entry) ? '' : 'none';
+  });
+}
+
+function applyLogFilter(): void {
+  const input = document.getElementById('log-search') as HTMLInputElement;
+  logFilter = input.value.trim().toLowerCase();
+  (document.getElementById('btn-clear-search') as HTMLButtonElement).hidden = input.value === '';
+  applyFilters();
+}
+
+function clearLogFilter(): void {
+  (document.getElementById('log-search') as HTMLInputElement).value = '';
+  applyLogFilter();
+}
+
+// ─── Type Filter ───────────────────────────────────────────────────────────────
+
+// Adds a checkbox for any message type not seen before. A new type is selected by
+// default only when every known type is currently selected (i.e. the user isn't
+// filtering); if a type filter is active, new types arrive deselected so they don't
+// silently bypass the filter.
+function registerLogType(type: string): void {
+  if (knownTypes.has(type)) return;
+  const selectByDefault = selectedTypes.size === knownTypes.size;
+  knownTypes.add(type);
+  if (selectByDefault) selectedTypes.add(type);
+
+  document.getElementById('filter-menu-empty')!.hidden = true;
+
+  const label = document.createElement('label');
+  label.className = 'filter-option';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = selectByDefault;
+  cb.value = type;
+  cb.addEventListener('change', () => {
+    if (cb.checked) selectedTypes.add(type); else selectedTypes.delete(type);
+    updateFilterLabel();
+    applyFilters();
+  });
+  label.appendChild(cb);
+  label.appendChild(document.createTextNode(type));
+
+  // Insert alphabetically so the list stays stable as new types arrive.
+  const list = document.getElementById('filter-menu-list')!;
+  const existing = Array.from(list.querySelectorAll<HTMLInputElement>('input'));
+  const before = existing.find(other => other.value > type);
+  list.insertBefore(label, before ? before.closest('.filter-option') : null);
+
+  updateFilterLabel();
+}
+
+function updateFilterLabel(): void {
+  const btn = document.getElementById('btn-filter-toggle')!;
+  const total = knownTypes.size;
+  const sel = selectedTypes.size;
+  btn.textContent = (total === 0 || sel === total) ? 'Types ▾' : `Types (${sel}/${total}) ▾`;
+}
+
+function setAllTypes(selected: boolean): void {
+  selectedTypes.clear();
+  if (selected) knownTypes.forEach(t => selectedTypes.add(t));
+  document.querySelectorAll<HTMLInputElement>('#filter-menu-list input').forEach(cb => { cb.checked = selected; });
+  updateFilterLabel();
+  applyFilters();
+}
+
+function toggleFilterMenu(): void {
+  const menu = document.getElementById('filter-menu')!;
+  menu.hidden = !menu.hidden;
 }
 
 function logIn(msg: AnyMessage): void {
   const type = msg.type ?? '?';
   const info = summarize(msg);
-  appendLog('in', '<span class="log-tag tag-json">JSON</span>', info ? `${type}: ${info}` : type, JSON.stringify(msg, null, 2));
+  appendLog('in', type, '<span class="log-tag tag-json">JSON</span>', info ? `${type}: ${info}` : type, JSON.stringify(msg, null, 2));
 }
 
 function logOut(msg: AnyMessage): void {
   const info = summarize(msg);
-  appendLog('out', '<span class="log-tag tag-out">SEND</span>', info ? `${msg.type}: ${info}` : msg.type, JSON.stringify(msg, null, 2));
+  appendLog('out', msg.type, '<span class="log-tag tag-out">SEND</span>', info ? `${msg.type}: ${info}` : msg.type, JSON.stringify(msg, null, 2));
 }
 
 function logSys(text: string): void {
-  appendLog('sys', '<span class="log-tag tag-sys">SYS</span>', text, null);
+  appendLog('sys', 'system', '<span class="log-tag tag-sys">SYS</span>', text, null);
 }
 
 function clearLog(): void {
@@ -623,6 +711,13 @@ function clearLog(): void {
   expandedEntry = null;
   rxChunks = 0;
   document.getElementById('stat-chunks')!.textContent = '0';
+
+  // Reset the type filter — nothing has been encountered anymore.
+  knownTypes.clear();
+  selectedTypes.clear();
+  document.querySelectorAll('#filter-menu-list .filter-option').forEach(el => el.remove());
+  document.getElementById('filter-menu-empty')!.hidden = false;
+  updateFilterLabel();
 }
 
 function toggleAutoScroll(): void {
@@ -736,6 +831,17 @@ document.getElementById('btn-start')!.addEventListener('click', startCall);
 document.getElementById('btn-end')!.addEventListener('click', endCall);
 document.getElementById('btn-clear-log')!.addEventListener('click', clearLog);
 document.getElementById('btn-autoscroll')!.addEventListener('click', toggleAutoScroll);
+document.getElementById('log-search')!.addEventListener('input', applyLogFilter);
+document.getElementById('btn-clear-search')!.addEventListener('click', clearLogFilter);
+document.getElementById('btn-filter-toggle')!.addEventListener('click', toggleFilterMenu);
+document.getElementById('btn-filter-all')!.addEventListener('click', () => setAllTypes(true));
+document.getElementById('btn-filter-none')!.addEventListener('click', () => setAllTypes(false));
+// Close the type-filter dropdown when clicking outside it.
+document.addEventListener('click', (e) => {
+  const filter = document.getElementById('log-filter')!;
+  const menu = document.getElementById('filter-menu') as HTMLElement;
+  if (!menu.hidden && !filter.contains(e.target as Node)) menu.hidden = true;
+});
 document.getElementById('btn-mic')!.addEventListener('click', toggleMic);
 document.getElementById('btn-say')!.addEventListener('click', sendSay);
 document.getElementById('btn-add-msg')!.addEventListener('click', sendAddMessage);
