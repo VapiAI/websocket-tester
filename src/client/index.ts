@@ -866,6 +866,9 @@ document.getElementById('sample-rate')!.addEventListener('change', (e) => {
 });
 document.getElementById('sample-rate-custom')!.addEventListener('input', onCustomRateInput);
 
+// Clear any search text the browser restored after a refresh. On load, nothing is filtered yet
+clearLogFilter();
+
 // Sync custom input visibility in case the browser restored the dropdown to 'custom' after a refresh
 if ((document.getElementById('sample-rate') as HTMLSelectElement).value === 'custom') {
   (document.getElementById('sample-rate-custom') as HTMLInputElement).style.display = '';
