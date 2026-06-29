@@ -75,4 +75,4 @@ Browser <-> ws://localhost:8000/ws <-> Node server <-> wss://... <-> Vapi
         -> call control messages (JSON)
 ```
 
-Audio format: PCM signed 16-bit little-endian, 16 kHz, mono.
+Audio format: PCM signed 16-bit little-endian, mono, configurable sample rate.
