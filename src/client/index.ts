@@ -649,7 +649,10 @@ function summarize(msg: AnyMessage): string {
     }
     case 'transcript': {
       const m = msg as TranscriptMessage;
-      return `[${m.role ?? '?'}] ${clip(m.transcript, 60)}`;
+      const metaParts: string[] = [];
+      if (m.role) metaParts.push(m.role);
+      if (m.transcriptType) metaParts.push(m.transcriptType);
+      return `[${metaParts.join(' · ')}] ${clip(m.transcript, 60)}`;
     }
     case 'model-output': {
       const m = msg as ModelOutputMessage;

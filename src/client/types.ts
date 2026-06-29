@@ -35,6 +35,7 @@ export interface SpeechUpdateMessage extends AnyMessage {
 export interface TranscriptMessage extends AnyMessage {
   type: 'transcript';
   role?: string;
+  transcriptType?: string
   transcript?: string;
 }
 
