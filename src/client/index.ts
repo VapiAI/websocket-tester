@@ -16,8 +16,10 @@ let currentSampleRate = 44100;
 let nextPlayTime = 0;
 let micStream: MediaStream | null = null;
 let micSource: MediaStreamAudioSourceNode | null = null;
-let micNode: ScriptProcessorNode | null = null;
+let captureNode: ScriptProcessorNode | null = null;
 let micActive = false;
+let wavSource: AudioBufferSourceNode | null = null;
+let wavStreaming = false;
 let autoScroll = true;
 let expandedEntry: HTMLElement | null = null;
 let logFilter = '';
@@ -121,26 +123,28 @@ function playAudioChunk(arrayBuffer: ArrayBuffer): void {
   nextPlayTime = startAt + buffer.duration;
 }
 
-// ─── Microphone ───────────────────────────────────────────────────────────────
+// ─── Audio Capture Pipeline (mic + WAV) ─────────────────────────────────────────
+//
+// A single ScriptProcessorNode ("capture node") is the one place audio leaves for
+// the server. Its input is driven by exactly one source at a time — either the live
+// mic or a WAV file streamed through the audio graph — so we never send two audio
+// sources at once. Whatever reaches the node's input is metered, converted to
+// 16-bit PCM and sent, paced in realtime by the audio clock.
 
-function attachMicNodes(): void {
-  if (micSource) { micSource.disconnect(); micSource = null; }
-  if (micNode) { micNode.disconnect(); micNode = null; }
-
-  micSource = audioCtx!.createMediaStreamSource(micStream!);
+function buildCaptureNode(): void {
+  if (captureNode) { captureNode.disconnect(); captureNode = null; }
 
   // ScriptProcessor is deprecated but universally supported
-  const micBufSize = bufferSizeForRate(currentSampleRate);
+  const bufSize = bufferSizeForRate(currentSampleRate);
   console.log(
-    "Attaching mic: sampleRate=%s, bufSize=%s, chunkInterval=%sms",
-    currentSampleRate, micBufSize, micBufSize / currentSampleRate * 1000
+    "Building capture node: sampleRate=%s, bufSize=%s, chunkInterval=%sms",
+    currentSampleRate, bufSize, bufSize / currentSampleRate * 1000
   );
 
-  micNode = audioCtx!.createScriptProcessor(micBufSize, 1, 1);
+  captureNode = audioCtx!.createScriptProcessor(bufSize, 1, 1);
   const meter = document.getElementById('mic-meter')!;
 
-  micNode.onaudioprocess = (e: AudioProcessingEvent) => {
-    if (!micActive) return;
+  captureNode.onaudioprocess = (e: AudioProcessingEvent) => {
     const float32 = e.inputBuffer.getChannelData(0);
 
     let rms = 0;
@@ -148,18 +152,37 @@ function attachMicNodes(): void {
     rms = Math.sqrt(rms / float32.length);
     meter.style.width = Math.min(100, rms * 800) + '%';
 
+    // Only forward when a source is actually driving the pipeline.
+    if (!micActive && !wavStreaming) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const int16 = float32ToInt16(float32);
     txBytesAccum += int16.byteLength;
     ws.send(int16.buffer);
   };
 
-  micSource.connect(micNode);
-  micNode.connect(audioCtx!.destination); // must be connected to run
+  captureNode.connect(audioCtx!.destination); // must be connected to run
+}
+
+function ensureCaptureNode(): void {
+  ensureAudioCtx();
+  // Rebuild if missing, or if the node is stranded on a context ensureAudioCtx()
+  // has since replaced (e.g. after a sample-rate change).
+  if (!captureNode || captureNode.context !== audioCtx) buildCaptureNode();
+}
+
+function connectMic(): void {
+  if (!audioCtx || !captureNode || !micStream) return;
+  if (micSource) { micSource.disconnect(); micSource = null; }
+  micSource = audioCtx.createMediaStreamSource(micStream);
+  micSource.connect(captureNode);
+}
+
+function disconnectMic(): void {
+  if (micSource) { micSource.disconnect(); micSource = null; }
 }
 
 async function startMic(): Promise<void> {
-  ensureAudioCtx();
+  ensureCaptureNode();
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   } catch (e) {
@@ -167,22 +190,24 @@ async function startMic(): Promise<void> {
     return;
   }
 
-  attachMicNodes();
-
   micActive = true;
+  // While a WAV is streaming it owns the pipeline; the mic stays muted until it ends.
+  if (!wavStreaming) connectMic();
+
   document.getElementById('btn-mic')!.classList.add('active');
   const micStatus = document.getElementById('mic-status')!;
-  micStatus.textContent = 'Active';
+  micStatus.textContent = wavStreaming ? 'Muted (WAV)' : 'Active';
   micStatus.className = 'mic-status active';
   if (silenceActive) setSilenceStatus('paused', 'Paused — mic active');
-  logSys('Microphone started');
+  logSys(wavStreaming ? 'Microphone started (muted — WAV streaming)' : 'Microphone started');
 }
 
 function stopMic(): void {
   micActive = false; // set first so any in-flight onaudioprocess callbacks bail immediately
-  if (micSource) { micSource.disconnect(); micSource = null; }
-  if (micNode) { micNode.disconnect(); micNode = null; }
+  disconnectMic();
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  // Tear the capture node down only if nothing else is using it.
+  if (!wavStreaming && captureNode) { captureNode.disconnect(); captureNode = null; }
   if (silenceActive) {
     if (ws && ws.readyState === WebSocket.OPEN) setSilenceStatus('active', 'Sending');
     else setSilenceStatus('waiting', 'Waiting for call…');
@@ -241,7 +266,8 @@ async function startCall(): Promise<void> {
   updateSilenceConfig();
   if (micActive && micStream && sampleRate !== prevSampleRate) {
     ensureAudioCtx();
-    attachMicNodes();
+    buildCaptureNode();
+    connectMic();
   }
   logSys(`Call created: ${callId} (${sampleRate} Hz)`);
 
@@ -266,6 +292,7 @@ async function startCall(): Promise<void> {
   });
 
   ws.addEventListener('close', (e: CloseEvent) => {
+    if (wavStreaming) stopWavStream();
     logSys(`WebSocket closed: code=${e.code} reason=${e.reason || '(none)'}`);
     setStatus('', 'Disconnected');
     setConnected(false);
@@ -392,8 +419,9 @@ function startSilence(): void {
 
   silenceInterval = setInterval(() => {
     if (!silenceActive) return;
-    if (micActive) {
-      setSilenceStatus('paused', 'Paused — mic active');
+    if (micActive || wavStreaming) {
+      // A streaming WAV mutes the mic, so it takes precedence in the label.
+      setSilenceStatus('paused', wavStreaming ? 'Paused — WAV streaming' : 'Paused — mic active');
       return;
     }
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -423,6 +451,8 @@ function setSilenceStatus(state: SilenceState, label: string): void {
 // ─── Manual Audio ─────────────────────────────────────────────────────────────
 
 let wavPcmBuffer: ArrayBuffer | null = null;
+let wavSampleRate = 0;
+let wavChannels = 1;
 
 function parseWav(arrayBuffer: ArrayBuffer): WavParseResult {
   const view = new DataView(arrayBuffer);
@@ -492,14 +522,18 @@ function handleWavChange(input: HTMLInputElement): void {
     }
 
     wavPcmBuffer = result.pcmData;
+    wavSampleRate = result.sampleRate;
+    wavChannels = result.channels;
 
-    const expectedRate = parseSelectedSampleRate() ?? currentSampleRate;
-    const match = result.sampleRate === expectedRate && result.channels === 1 && result.bitsPerSample === 16;
+    // Sample rate and channel count are converted on the fly while streaming (the
+    // AudioContext resamples and down-mixes to mono). Only bit depth needs to
+    // match — the PCM decode assumes 16-bit samples.
+    const match = result.bitsPerSample === 16;
     const kb = (wavPcmBuffer.byteLength / 1024).toFixed(1);
     const infoEl = document.getElementById('wav-info')!;
     infoEl.textContent =
       `${result.sampleRate} Hz · ${result.channels}ch · ${result.bitsPerSample}-bit · ${kb} KB PCM` +
-      (match ? '' : `  ⚠ expected ${expectedRate} Hz / 1ch / 16-bit`);
+      (match ? '' : `  ⚠ expected 16-bit`);
     infoEl.className = 'wav-info' + (match ? '' : ' mismatch');
     infoEl.style.display = 'block';
 
@@ -513,11 +547,72 @@ function handleWavChange(input: HTMLInputElement): void {
   reader.readAsArrayBuffer(file);
 }
 
+// Streams the loaded WAV through the shared capture pipeline in realtime — exactly
+// like the mic — instead of dumping the whole buffer at once. The mic is muted for
+// the duration, and the audio is also routed to the speakers so the user hears it.
 function sendWav(): void {
+  if (wavStreaming) { stopWavStream(); return; } // clicking again stops the stream
   if (!wavPcmBuffer || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(wavPcmBuffer);
-  txBytesAccum += wavPcmBuffer.byteLength;
-  logSys(`Sent WAV: ${wavPcmBuffer.byteLength} bytes`);
+
+  ensureCaptureNode();
+  // Hand the pipeline over to the WAV: mute the mic for the duration of the stream.
+  disconnectMic();
+
+  // Decode the raw PCM into an AudioBuffer at the file's own sample rate; the
+  // AudioContext resamples it to the negotiated rate as it plays, so both the
+  // sent samples and the local playback come out at the correct pitch.
+  const channels = Math.max(1, wavChannels);
+  const int16 = new Int16Array(wavPcmBuffer);
+  const frames = Math.floor(int16.length / channels);
+  const buffer = audioCtx!.createBuffer(channels, frames, wavSampleRate || currentSampleRate);
+  for (let ch = 0; ch < channels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < frames; i++) data[i] = int16[i * channels + ch] / 32768;
+  }
+
+  wavSource = audioCtx!.createBufferSource();
+  wavSource.buffer = buffer;
+  wavSource.connect(captureNode!);          // stream to the server (realtime, like the mic)
+  wavSource.connect(audioCtx!.destination); // and let the user hear it as it streams
+  wavSource.onended = () => { if (wavStreaming) stopWavStream(true); };
+
+  wavStreaming = true;
+  if (micActive) document.getElementById('mic-status')!.textContent = 'Muted (WAV)';
+  if (silenceActive) setSilenceStatus('paused', 'Paused — WAV streaming');
+  updateWavButton();
+  wavSource.start();
+  logSys(`Streaming WAV: ${wavPcmBuffer.byteLength} bytes @ ${wavSampleRate || currentSampleRate} Hz`);
+}
+
+function stopWavStream(finished = false): void {
+  if (!wavStreaming) return;
+  wavStreaming = false;
+  if (wavSource) {
+    wavSource.onended = null;
+    try { wavSource.stop(); } catch { /* already stopped */ }
+    wavSource.disconnect();
+    wavSource = null;
+  }
+  // Hand the pipeline back to the mic if it is still on, otherwise tear it down.
+  if (micActive) {
+    connectMic();
+    document.getElementById('mic-status')!.textContent = 'Active';
+  } else if (captureNode) {
+    captureNode.disconnect();
+    captureNode = null;
+    document.getElementById('mic-meter')!.style.width = '0%';
+  }
+  if (silenceActive) {
+    if (micActive) setSilenceStatus('paused', 'Paused — mic active');
+    else if (ws && ws.readyState === WebSocket.OPEN) setSilenceStatus('active', 'Sending');
+    else setSilenceStatus('waiting', 'Waiting for call…');
+  }
+  updateWavButton();
+  logSys(finished ? 'WAV stream finished' : 'WAV stream stopped');
+}
+
+function updateWavButton(): void {
+  (document.getElementById('btn-wav') as HTMLButtonElement).textContent = wavStreaming ? 'Stop WAV' : 'Send WAV';
 }
 
 function sendHex(): void {
