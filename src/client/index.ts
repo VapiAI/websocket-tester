@@ -824,6 +824,13 @@ function toggleAutoScroll(): void {
 
 function summarize(msg: AnyMessage): string {
   const clip = (s: unknown, n = 60): string => String(s ?? '').slice(0, n);
+  const clipMiddle = (s: unknown, n = 60): string => {
+    const str = String(s ?? '');
+    if (str.length <= n) return str;
+    const head = Math.ceil((n - 1) / 2);
+    const tail = Math.floor((n - 1) / 2);
+    return `${str.slice(0, head)}…${str.slice(str.length - tail)}`;
+  };
   switch (msg.type) {
     case 'status-update': {
       const m = msg as StatusUpdateMessage;
@@ -842,7 +849,7 @@ function summarize(msg: AnyMessage): string {
       const metaParts: string[] = [];
       if (m.role) metaParts.push(m.role);
       if (m.transcriptType) metaParts.push(m.transcriptType);
-      return `[${metaParts.join(' · ')}] ${clip(m.transcript, 60)}`;
+      return `[${metaParts.join(' · ')}] ${clipMiddle(m.transcript, 60)}`;
     }
     case 'model-output': {
       const m = msg as ModelOutputMessage;
