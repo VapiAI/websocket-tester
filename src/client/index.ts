@@ -227,22 +227,23 @@ async function toggleMic(): Promise<void> {
 // ─── WebSocket / Call ─────────────────────────────────────────────────────────
 
 async function startCall(): Promise<void> {
-  const assistantId = (document.getElementById('assistant-id') as HTMLInputElement).value.trim();
+  const targetType = selectedTargetType();
+  const targetId = (document.getElementById('target-id') as HTMLInputElement).value.trim();
   const sampleRate = parseSelectedSampleRate()!;
   setStatus('connecting', 'Connecting…');
 
   let data: StartCallApiResponse;
   try {
-    const body: Record<string, unknown> = { sampleRate };
-    if (assistantId) body.assistantId = assistantId;
+    const body: Record<string, unknown> = { sampleRate, targetType };
+    if (targetId) body.targetId = targetId;
 
     const rawOverrides = (document.getElementById('cfg-overrides') as HTMLTextAreaElement).value.trim();
     if (rawOverrides) {
       try {
-        body.assistantOverrides = JSON.parse(rawOverrides) as unknown;
+        body.overrides = JSON.parse(rawOverrides) as unknown;
       } catch (e) {
         setStatus('error', 'Error');
-        logSys(`assistantOverrides JSON parse error: ${(e as Error).message}`);
+        logSys(`${targetType} overrides JSON parse error: ${(e as Error).message}`);
         return;
       }
     }
@@ -269,7 +270,7 @@ async function startCall(): Promise<void> {
     buildCaptureNode();
     connectMic();
   }
-  logSys(`Call created: ${callId} (${sampleRate} Hz)`);
+  logSys(`Call created: ${callId} (${targetType}, ${sampleRate} Hz)`);
 
   const wsUrl = `ws://${location.host}/ws?session=${data.sessionId}`;
   ws = new WebSocket(wsUrl);
@@ -636,11 +637,71 @@ function sendHex(): void {
 
 // ─── UI Helpers ───────────────────────────────────────────────────────────────
 
+type TargetType = 'assistant' | 'squad';
+
+/** From `VAPI_DEFAULT_TARGET`; only shown as a hint when its type is selected. */
+let defaultTarget: { type: TargetType; id: string } | null = null;
+
+function selectedTargetType(): TargetType {
+  return (document.getElementById('target-type') as HTMLSelectElement).value as TargetType;
+}
+
+const TARGET_STORAGE_KEY = 'vapi-tester.target';
+
+/**
+ * The type and the id have to come back from a refresh together — browser form
+ * restoration covers the text input but can't be reconciled with the `.env`
+ * default, which is what used to clobber a restored "Squad" back to "Assistant"
+ * while leaving a squad id in the field. So the pair is persisted explicitly.
+ * Returns whether a stored type was applied, so the default only seeds a first visit.
+ */
+function targetRestore(): boolean {
+  let stored: { type?: unknown; id?: unknown } | null = null;
+  try {
+    const raw = localStorage.getItem(TARGET_STORAGE_KEY);
+    if (raw) stored = JSON.parse(raw) as { type?: unknown; id?: unknown };
+  } catch { /* private mode / blocked storage — fall through to defaults */ }
+  // Restore both or neither — a lone id would re-create the exact mismatch
+  // this function exists to prevent.
+  if (!stored || (stored.type !== 'assistant' && stored.type !== 'squad')) return false;
+
+  (document.getElementById('target-type') as HTMLSelectElement).value = stored.type;
+  if (typeof stored.id === 'string') {
+    (document.getElementById('target-id') as HTMLInputElement).value = stored.id;
+  }
+  return true;
+}
+
+function targetPersist(): void {
+  try {
+    localStorage.setItem(TARGET_STORAGE_KEY, JSON.stringify({
+      type: selectedTargetType(),
+      id: (document.getElementById('target-id') as HTMLInputElement).value.trim(),
+    }));
+  } catch { /* nothing to do — persistence is a convenience, not required */ }
+}
+
+/** Keeps the id placeholder and overrides label in step with the selected type. */
+function syncTargetLabels(): void {
+  const type = selectedTargetType();
+  const noun = type === 'squad' ? 'Squad' : 'Assistant';
+
+  const suffix = defaultTarget && defaultTarget.type === type
+    ? `(default: ${defaultTarget.id})`
+    : '(or set VAPI_DEFAULT_TARGET in .env)';
+  (document.getElementById('target-id') as HTMLInputElement).placeholder = `${noun} ID ${suffix}`;
+
+  const btn = document.getElementById('btn-overrides-toggle')!;
+  const open = document.getElementById('overrides-wrap')!.classList.contains('open');
+  btn.textContent = `${noun} overrides ${open ? '▴' : '▾'}`;
+}
+
 function toggleOverrides(): void {
   const wrap = document.getElementById('overrides-wrap')!;
   const btn = document.getElementById('btn-overrides-toggle')!;
   const opening = !wrap.classList.contains('open');
-  btn.textContent = opening ? 'Assistant overrides ▴' : 'Assistant overrides ▾';
+  const noun = selectedTargetType() === 'squad' ? 'Squad' : 'Assistant';
+  btn.textContent = opening ? `${noun} overrides ▴` : `${noun} overrides ▾`;
   if (opening) {
     wrap.style.display = 'grid';
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -929,6 +990,8 @@ function setConnected(connected: boolean): void {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.getElementById('btn-overrides-toggle')!.addEventListener('click', toggleOverrides);
+document.getElementById('target-type')!.addEventListener('change', () => { syncTargetLabels(); targetPersist(); });
+document.getElementById('target-id')!.addEventListener('input', targetPersist);
 document.getElementById('btn-start')!.addEventListener('click', startCall);
 document.getElementById('btn-end')!.addEventListener('click', endCall);
 document.getElementById('btn-clear-log')!.addEventListener('click', clearLog);
@@ -977,13 +1040,23 @@ if ((document.getElementById('sample-rate') as HTMLSelectElement).value === 'cus
   onCustomRateInput();
 }
 
+// Restore synchronously, before the async config fetch, so the header never
+// flickers through the wrong selection.
+const hadStoredTarget = targetRestore();
+
 (async () => {
   try {
-    const cfg = await fetch('/api/config').then(r => r.json()) as { defaultAssistantId?: string };
-    if (cfg.defaultAssistantId) {
-      (document.getElementById('assistant-id') as HTMLInputElement).placeholder =
-        `Assistant ID (default: ${cfg.defaultAssistantId})`;
+    const cfg = await fetch('/api/config').then(r => r.json()) as {
+      defaultTarget?: { type: TargetType; id: string } | null;
+    };
+    if (cfg.defaultTarget) {
+      defaultTarget = cfg.defaultTarget;
+      // Only seed the selection on a first visit — never override what the user chose.
+      if (!hadStoredTarget) {
+        (document.getElementById('target-type') as HTMLSelectElement).value = defaultTarget.type;
+      }
     }
   } catch {}
+  syncTargetLabels();
   logSys('Ready — click "Start Call" to begin');
 })();

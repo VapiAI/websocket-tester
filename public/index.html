@@ -13,11 +13,15 @@
   <div class="header-row">
     <h1>Vapi WebSocket Tester</h1>
     <div class="header-fields">
+      <select id="target-type" class="target-type-select">
+        <option value="assistant" selected>Assistant</option>
+        <option value="squad">Squad</option>
+      </select>
       <input
         type="text"
-        id="assistant-id"
-        class="assistant-id"
-        placeholder="Assistant ID (or set VAPI_ASSISTANT_ID in .env)"
+        id="target-id"
+        class="target-id"
+        placeholder="Assistant ID (or set VAPI_DEFAULT_TARGET in .env)"
       />
       <button class="btn-secondary" id="btn-overrides-toggle">Assistant overrides ▾</button>
       <select id="sample-rate" class="sample-rate-select">
