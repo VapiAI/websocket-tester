@@ -19,7 +19,7 @@ Edit `.env` and fill in your values:
 | Variable | Required | Description |
 |---|---|---|
 | `VAPI_API_KEY` | Yes | Your Vapi API private key |
-| `VAPI_ASSISTANT_ID` | No | Default assistant ID (can also be set in the UI) |
+| `VAPI_DEFAULT_TARGET` | No | Default call target as `assistant:<id>` or `squad:<id>` (can also be set in the UI). A bare id is treated as an assistant. |
 | `VAPI_API_URL` | No | Defaults to `https://api.vapi.ai` |
 | `PORT` | No | Defaults to `8000` |
 
@@ -45,8 +45,8 @@ Open <http://localhost:8000> in your browser to access.
 
 ## Usage
 
-1. Enter an Assistant ID in the header (or leave blank if `VAPI_ASSISTANT_ID` is
-   set in `.env`)
+1. Pick **Assistant** or **Squad** in the header and enter its ID (or leave the
+   ID blank if `VAPI_DEFAULT_TARGET` is set in `.env`)
 2. Click **Start Call** - the server creates a `vapi.websocket` call and proxies
    the WebSocket connection
 3. Click the **microphone button** to start sending audio from your mic

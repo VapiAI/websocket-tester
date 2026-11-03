@@ -7,13 +7,47 @@ dotenv.config();
 
 const API_KEY = process.env.VAPI_API_KEY ?? '';
 const API_URL = process.env.VAPI_API_URL ?? 'https://api.vapi.ai';
-const DEFAULT_ASSISTANT_ID = process.env.VAPI_ASSISTANT_ID ?? '';
 const PORT = parseInt(process.env.PORT ?? '8000', 10);
 
 if (!API_KEY) {
   console.error('Error: VAPI_API_KEY is not set. Copy .env.example to .env and fill in your API key.');
   process.exit(1);
 }
+
+// A call targets exactly one of these. Vapi's CreateCallDTO carries a parallel
+// id/overrides pair per type, so the type picks which keys the payload uses.
+const TARGET_TYPES = ['assistant', 'squad'] as const;
+type TargetType = (typeof TARGET_TYPES)[number];
+
+interface Target {
+  type: TargetType;
+  id: string;
+}
+
+function isTargetType(value: unknown): value is TargetType {
+  return TARGET_TYPES.includes(value as TargetType);
+}
+
+/** Parses `VAPI_DEFAULT_TARGET`, e.g. `squad:5f9b...`. A bare id means assistant. */
+function parseDefaultTarget(raw: string): Target | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const sep = trimmed.indexOf(':');
+  if (sep === -1) return { type: 'assistant', id: trimmed };
+
+  const type = trimmed.slice(0, sep).trim().toLowerCase();
+  const id = trimmed.slice(sep + 1).trim();
+  if (!isTargetType(type) || !id) {
+    console.warn(
+      `Warning: VAPI_DEFAULT_TARGET="${trimmed}" is malformed — expected "<${TARGET_TYPES.join('|')}>:<id>". Ignoring.`,
+    );
+    return null;
+  }
+  return { type, id };
+}
+
+const DEFAULT_TARGET = parseDefaultTarget(process.env.VAPI_DEFAULT_TARGET ?? '');
 
 const app = express();
 app.use(express.json());
@@ -27,8 +61,9 @@ const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 const pendingSessions = new Map<string, string>();
 
 interface StartCallBody {
-  assistantId?: string;
-  assistantOverrides?: Record<string, unknown>;
+  targetType?: string;
+  targetId?: string;
+  overrides?: Record<string, unknown>;
   name?: string;
   metadata?: Record<string, unknown>;
   sampleRate?: number;
@@ -38,10 +73,29 @@ app.post('/api/start-call', async (req, res) => {
   try {
     const url = `${API_URL}/call`;
     const body: StartCallBody = req.body ?? {};
-    const assistantId = body.assistantId ?? DEFAULT_ASSISTANT_ID;
 
-    if (!assistantId) {
-      res.status(400).json({ error: 'assistantId is required — set VAPI_ASSISTANT_ID in .env or pass it in the request body' });
+    if (body.targetType !== undefined && !isTargetType(body.targetType)) {
+      res.status(400).json({ error: `targetType must be one of: ${TARGET_TYPES.join(', ')}` });
+      return;
+    }
+
+    // An id without a type means the caller wants the type they asked for, not
+    // whatever the .env default happens to be — so the type only falls back
+    // when the id does too, and only to a default of the same type. Falling
+    // back across types would start an assistant call while the UI says Squad.
+    const requestedType: TargetType = body.targetType ?? DEFAULT_TARGET?.type ?? 'assistant';
+    const target: Target | null = body.targetId
+      ? { type: requestedType, id: body.targetId }
+      : DEFAULT_TARGET?.type === requestedType
+        ? DEFAULT_TARGET
+        : null;
+
+    if (!target) {
+      res.status(400).json({
+        error: DEFAULT_TARGET
+          ? `No ${requestedType} ID provided — VAPI_DEFAULT_TARGET is "${DEFAULT_TARGET.type}:${DEFAULT_TARGET.id}". Enter one in the ID field, or change the default in .env`
+          : 'targetId is required — set VAPI_DEFAULT_TARGET in .env or pass it in the request body',
+      });
       return;
     }
 
@@ -52,7 +106,7 @@ app.post('/api/start-call', async (req, res) => {
     const sampleRate = body.sampleRate !== undefined ? Math.round(body.sampleRate) : 44100;
 
     const callPayload: Record<string, unknown> = {
-      assistantId,
+      [target.type === 'squad' ? 'squadId' : 'assistantId']: target.id,
       transport: {
         provider: 'vapi.websocket',
         audioFormat: {
@@ -62,7 +116,11 @@ app.post('/api/start-call', async (req, res) => {
         },
       },
     };
-    if (body.assistantOverrides) callPayload.assistantOverrides = body.assistantOverrides;
+    // `squadOverrides` applies to every member of the squad; `assistantOverrides`
+    // is silently ignored on a squad call, so the key has to follow the type.
+    if (body.overrides) {
+      callPayload[target.type === 'squad' ? 'squadOverrides' : 'assistantOverrides'] = body.overrides;
+    }
     if (body.name) callPayload.name = body.name;
     if (body.metadata) callPayload.metadata = body.metadata;
 
@@ -108,7 +166,7 @@ app.post('/api/start-call', async (req, res) => {
 });
 
 app.get('/api/config', (_req, res) => {
-  res.json({ defaultAssistantId: DEFAULT_ASSISTANT_ID });
+  res.json({ defaultTarget: DEFAULT_TARGET });
 });
 
 wss.on('connection', (clientWs: WebSocket, req: IncomingMessage) => {
@@ -182,5 +240,5 @@ wss.on('connection', (clientWs: WebSocket, req: IncomingMessage) => {
 httpServer.listen(PORT, () => {
   console.log(`Vapi WebSocket Tester running at http://localhost:${PORT}`);
   console.log(`API key: ${API_KEY ? '✓ set' : '✗ missing'}`);
-  console.log(`Default assistant: ${DEFAULT_ASSISTANT_ID || '(none — set in UI or .env)'}`);
+  console.log(`Default target: ${DEFAULT_TARGET ? `${DEFAULT_TARGET.type} ${DEFAULT_TARGET.id}` : '(none — set in UI or .env)'}`);
 });

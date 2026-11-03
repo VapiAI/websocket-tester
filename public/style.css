@@ -106,7 +106,8 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:foc
 .sample-rate-error { font-size: 11px; color: var(--red); white-space: nowrap; }
 input.invalid { border-color: var(--red) !important; }
 
-input.assistant-id { width: 300px; }
+.target-type-select { width: 110px; }
+input.target-id { width: 300px; }
 
 button {
   border: none;
